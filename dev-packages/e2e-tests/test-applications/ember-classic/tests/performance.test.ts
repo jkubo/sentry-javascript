@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { collectStreamedSpans, getSpanOp, waitForStreamedSpan } from '@sentry-internal/test-utils';
+import {
+  collectStreamedSpans,
+  collectStreamedSpansUntilSegment,
+  getSpanOp,
+  waitForStreamedSpan,
+} from '@sentry-internal/test-utils';
 
 test('sends a pageload span with a parameterized URL', async ({ page }) => {
   const pageloadSpanPromise = waitForStreamedSpan('ember-classic', span => {
@@ -175,60 +180,25 @@ test('captures correct spans for navigation', async ({ page }) => {
     }),
   });
 
-  expect(beforeModelSpans).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        name: 'slow-loading-route',
-        attributes: expect.objectContaining({
-          'code.function.name': { type: 'string', value: 'beforeModel' },
+  // Route hook spans are named after the hook (matching `code.function.name`), which is the
+  // `function` op's name template. The route stays on the span as its description.
+  for (const [hookName, hookSpans] of [
+    ['beforeModel', beforeModelSpans],
+    ['model', modelSpans],
+    ['afterModel', afterModelSpans],
+  ] as const) {
+    expect(hookSpans.map(span => span.name)).toEqual([hookName, hookName]);
+    expect(hookSpans).toMatchObject(
+      ['slow-loading-route', 'slow-loading-route.index'].map(fullRouteName => ({
+        attributes: {
+          'code.function.name': { type: 'string', value: hookName },
+          'sentry.description': { type: 'string', value: fullRouteName },
           'sentry.op': { type: 'string', value: 'function' },
           'sentry.origin': { type: 'string', value: 'auto.ui.ember' },
-        }),
-      }),
-      expect.objectContaining({
-        name: 'slow-loading-route.index',
-        attributes: expect.objectContaining({
-          'code.function.name': { type: 'string', value: 'beforeModel' },
-          'sentry.op': { type: 'string', value: 'function' },
-          'sentry.origin': { type: 'string', value: 'auto.ui.ember' },
-        }),
-      }),
-    ]),
-  );
-
-  expect(modelSpans).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        name: 'slow-loading-route',
-        attributes: expect.objectContaining({
-          'code.function.name': { type: 'string', value: 'model' },
-        }),
-      }),
-      expect.objectContaining({
-        name: 'slow-loading-route.index',
-        attributes: expect.objectContaining({
-          'code.function.name': { type: 'string', value: 'model' },
-        }),
-      }),
-    ]),
-  );
-
-  expect(afterModelSpans).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({
-        name: 'slow-loading-route',
-        attributes: expect.objectContaining({
-          'code.function.name': { type: 'string', value: 'afterModel' },
-        }),
-      }),
-      expect.objectContaining({
-        name: 'slow-loading-route.index',
-        attributes: expect.objectContaining({
-          'code.function.name': { type: 'string', value: 'afterModel' },
-        }),
-      }),
-    ]),
-  );
+        },
+      })),
+    );
+  }
 
   expect(renderSpans).toEqual(
     expect.arrayContaining([
@@ -242,4 +212,27 @@ test('captures correct spans for navigation', async ({ page }) => {
       }),
     ]),
   );
+});
+
+test('captures a `ui.resolve` span alongside the `ui.render` span for a component', async ({ page }) => {
+  const spansPromise = collectStreamedSpansUntilSegment('ember-classic', 'route:tracing');
+
+  await page.goto(`/tracing`);
+
+  const spans = await spansPromise;
+
+  const resolveSpans = spans.filter(span => getSpanOp(span) === 'ui.resolve');
+  const renderSpans = spans.filter(span => getSpanOp(span) === 'ui.render');
+
+  expect(resolveSpans.length).toBeGreaterThan(0);
+  expect(renderSpans.length).toBeGreaterThan(0);
+
+  // Resolving a component definition and rendering it are separate steps, so they must not share
+  // an op even though they carry the same component name.
+  const resolveSpan = resolveSpans[0]!;
+  expect(resolveSpan.attributes).toMatchObject({
+    'sentry.op': { type: 'string', value: 'ui.resolve' },
+    'sentry.origin': { type: 'string', value: 'auto.ui.ember' },
+    'ui.component_name': { type: 'string', value: resolveSpan.name },
+  });
 });
