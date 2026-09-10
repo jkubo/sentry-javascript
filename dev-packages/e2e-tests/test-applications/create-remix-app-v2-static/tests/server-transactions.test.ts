@@ -56,3 +56,17 @@ test('Sends two linked transactions (server & client) to Sentry', async ({ page 
   expect(pageLoadParentSpanId).toEqual(loaderSpanId);
   expect(pageLoadSpanId).not.toEqual(httpServerSpanId);
 });
+
+test('Keeps the documentRequest span name unchanged with static spans', async ({ page }) => {
+  const transactionPromise = waitForTransaction('create-remix-app-v2-static', transactionEvent => {
+    return transactionEvent.contexts?.trace?.op === 'http.server' && transactionEvent.transaction === 'GET user/:id';
+  });
+
+  await page.goto('/user/123');
+
+  const transaction = await transactionPromise;
+  const documentRequestSpan = transaction.spans?.find(span => span.data?.['code.function.name'] === 'documentRequest');
+
+  expect(documentRequestSpan).toBeDefined();
+  expect(documentRequestSpan?.description).toBe('GET user/:id');
+});
